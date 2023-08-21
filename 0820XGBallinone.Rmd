@@ -1,0 +1,1184 @@
+---
+title: "XGB all in one"
+output: html_document
+date: "2023-08-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+#install.packages("e1071")
+#install.packages("xgboost")
+#install.packages("caret")
+#install.packages("Matrix")
+library(mlr)
+#set parallel backend
+library(parallel)
+library(parallelMap) 
+library(xgboost)
+library(dplyr)
+library(rpart)
+library(randomForest)
+library(caret)
+library(lattice)
+library(readr)
+library(pROC)
+library(e1071)
+library(plyr)
+library(Matrix)
+
+calculate_f1score <- function(confusion_matrix) {
+  TP <- confusion_matrix[2, 2]  # True Positive
+  FN <- confusion_matrix[1, 2]  # False Negative
+  FP <- confusion_matrix[2, 1]  # False Positive
+  
+  precision <- TP / (TP + FP)  # 정밀도 (Precision)
+  recall <- TP / (TP + FN)     # 재현율 (Recall)
+  
+  f1_score <- 2 * (precision * recall) / (precision + recall)  # F1 점수 계산
+  
+  return(f1_score)
+}
+
+calculate_recall <- function(confusion_matrix) {
+  TP <- confusion_matrix[2, 2]  # True Positive
+  FN <- confusion_matrix[1, 2]  # False Negative
+  FP <- confusion_matrix[2, 1]  # False Positive
+  
+  #precision <- TP / (TP + FP)  # 정밀도 (Precision)
+  recall <- TP / (TP + FN)     # 재현율 (Recall)
+  
+  #f1_score <- 2 * (precision * recall) / (precision + recall)  # F1 점수 계산
+  
+  return(recall)
+}
+
+calculate_precision <- function(confusion_matrix) {
+  TP <- confusion_matrix[2, 2]  # True Positive
+  FN <- confusion_matrix[1, 2]  # False Negative
+  FP <- confusion_matrix[2, 1]  # False Positive
+  
+  precision <- TP / (TP + FP)  # 정밀도 (Precision)
+  #recall <- TP / (TP + FN)     # 재현율 (Recall)
+  
+  #f1_score <- 2 * (precision * recall) / (precision + recall)  # F1 점수 계산
+  
+  return(precision)
+}
+```
+
+
+```{r import dataset,echo=FALSE}
+ds <- read.csv("/Users/maesori/Documents/lab/Menopause Final/FINAL d23.csv")
+#getwd()
+
+ds <- ds %>% 
+  select("id", "HE_ht", "birth", "LW_ms_a", "LW_pr_1", "LW_br_ch", "LW_br_dur",
+         "apt_t", "town_t", "occp", "live2", "house", "EC_lgw_2", "EC_lgw_4", "allownc", "marri_1", "LW_pr", "LW_mt","LW_br", "LW_oc","DI1_dg", "DE2_dg", "DI3_dg", "DF2_dg", "DI5_dg", "DI6_dg","BS1_1", "BD1",
+         "incm5", "ho_incm5", "edu", "EC_lgw_5",
+         "mnprmt", "mnearly", "mnlate")
+
+#str(ds)
+
+#factorize_no_order <- function(x) {
+#  factor(x, ordered = FALSE)
+#}
+
+col2fac <- c("apt_t", "town_t", "occp", "live2", "house", "EC_lgw_2", "EC_lgw_4", "EC_lgw_5", "allownc", "marri_1", "LW_pr", "LW_mt","LW_br", "LW_oc","DI1_dg", "DE2_dg", "DI3_dg", "DF2_dg", "DI5_dg", "DI6_dg","BS1_1", "BD1", 
+             "mnprmt", "mnearly", "mnlate")
+
+ds[, col2fac] <- lapply(ds[, col2fac], factor)
+
+#str(ds)
+
+ds$incm5 <- factor(ds$incm5, ordered = TRUE)
+ds$ho_incm5 <- factor(ds$ho_incm5, ordered = TRUE)
+ds$edu <- factor(ds$edu, ordered = TRUE)
+
+#str(ds)
+
+#lapply(ds[,], table)
+```
+
+
+```{r 1hot encoding, include=FALSE}
+table(ds$mnprmt_num)
+table(ds$mnearly_num)
+table(ds$mnlate_num)
+ds$mnprmt_num <- as.numeric(ds$mnprmt)
+ds$mnearly_num <- as.numeric(ds$mnearly)
+ds$mnlate_num <- as.numeric(ds$mnlate)
+
+#premature
+pr_rp <- ds %>% 
+  select(mnprmt_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, birth, HE_ht, BS1_1, BD1)
+
+pr_soc <- ds %>% 
+  select(mnprmt_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, incm5, ho_incm5, edu,
+         occp, town_t, marri_1, live2, apt_t, EC_lgw_2, EC_lgw_4, EC_lgw_5, allownc, birth, HE_ht, BS1_1, BD1)
+
+pr_bio <- ds %>% 
+  select(mnprmt_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, DI1_dg, DE2_dg,
+         DI3_dg, DF2_dg, DI5_dg, DI6_dg, birth, HE_ht, BS1_1, BD1)
+
+pr_rsb <- ds %>% 
+  select(mnprmt_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, incm5, ho_incm5, edu,
+         occp, town_t, marri_1, live2, apt_t, EC_lgw_2, EC_lgw_4, EC_lgw_5, allownc, DI1_dg, DE2_dg,
+         DI3_dg, DF2_dg, DI5_dg, DI6_dg, birth, HE_ht, BS1_1, BD1)
+
+
+
+er_rp <- ds %>% 
+  select(mnearly_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, birth, HE_ht, BS1_1, BD1)
+
+er_soc <- ds %>% 
+  select(mnearly_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, incm5, ho_incm5, edu,
+         occp, town_t, marri_1, live2, apt_t, EC_lgw_2, EC_lgw_4, EC_lgw_5, allownc, birth, HE_ht, BS1_1, BD1)
+
+er_bio <- ds %>% 
+  select(mnearly_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, DI1_dg, DE2_dg,
+         DI3_dg, DF2_dg, DI5_dg, DI6_dg, birth, HE_ht, BS1_1, BD1)
+
+er_rsb <- ds %>% 
+  select(mnearly_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, incm5, ho_incm5, edu,
+         occp, town_t, marri_1, live2, apt_t, EC_lgw_2, EC_lgw_4, EC_lgw_5, allownc, DI1_dg, DE2_dg,
+         DI3_dg, DF2_dg, DI5_dg, DI6_dg, birth, HE_ht, BS1_1, BD1)
+
+
+
+
+lt_rp <- ds %>% 
+  select(mnlate_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, birth, HE_ht, BS1_1, BD1)
+
+lt_soc <- ds %>% 
+  select(mnlate_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, incm5, ho_incm5, edu,
+         occp, town_t, marri_1, live2, apt_t, EC_lgw_2, EC_lgw_4, EC_lgw_5, allownc, birth, HE_ht, BS1_1, BD1)
+
+lt_bio <- ds %>% 
+  select(mnlate_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, DI1_dg, DE2_dg,
+         DI3_dg, DF2_dg, DI5_dg, DI6_dg, birth, HE_ht, BS1_1, BD1)
+
+lt_rsb <- ds %>% 
+  select(mnlate_num, LW_ms_a, LW_pr, LW_pr_1, LW_mt, LW_br, LW_br_ch, LW_br_dur, LW_oc, incm5, ho_incm5, edu,
+         occp, town_t, marri_1, live2, apt_t, EC_lgw_2, EC_lgw_4, EC_lgw_5, allownc, DI1_dg, DE2_dg,
+         DI3_dg, DF2_dg, DI5_dg, DI6_dg, birth, HE_ht, BS1_1, BD1)
+
+#str(d23_xg_rsb)
+
+pr_dss <- list(pr_rp, pr_soc, pr_bio , pr_rsb)
+er_dss <- list(er_rp, er_soc, er_bio , er_rsb)
+lt_dss <- list(lt_rp, lt_soc, lt_bio ,lt_rsb)
+pel_1_dss <- list(pr_rp, er_rp, lt_rp)
+pel_l_dss <- list(pr_rsb, er_rsb, lt_rsb)
+
+
+a=1
+for (i in c(1:4)){
+  print(i)
+  d <- as.data.frame(pr_dss[i])
+  #f <- as.formula(as.character(FORMULAS[1]))
+  
+  dmy <- dummyVars(~., data = d)
+  new <- data.frame(predict(dmy, newdata = d))
+  
+  df_name <- paste0("pr_1hot", a) 
+  assign(df_name, new)
+
+  a= a+1
+}
+
+a=1
+for (i in c(1:4)){
+  print(i)
+  d <- as.data.frame(er_dss[i])
+  #f <- as.formula(as.character(FORMULAS[1]))
+  
+  dmy <- dummyVars(~., data = d)
+  new <- data.frame(predict(dmy, newdata = d))
+  
+  df_name <- paste0("er_1hot", a) 
+  assign(df_name, new)
+
+  a= a+1
+}
+
+a=1
+for (i in c(1:4)){
+  print(i)
+  d <- as.data.frame(lt_dss[i])
+  #f <- as.formula(as.character(FORMULAS[1]))
+  
+  dmy <- dummyVars(~., data = d)
+  new <- data.frame(predict(dmy, newdata = d))
+  
+  df_name <- paste0("lt_1hot", a) 
+  assign(df_name, new)
+
+  a= a+1
+}
+
+#View(d_xg_2)
+str(er_1hot1)
+
+#xgdata <- list(d_xg_4)
+pr_1hot_dss <- list(pr_1hot1, pr_1hot2, pr_1hot3, pr_1hot4)
+er_1hot_dss <- list(er_1hot1, er_1hot2, er_1hot3, er_1hot4)
+lt_1hot_dss <- list(lt_1hot1, lt_1hot2, lt_1hot3, lt_1hot4)
+pel_1_1hot_dss<- list(pr_1hot1,er_1hot1,lt_1hot1)
+pel_rsb_1hot_dss <- list(pr_1hot4, er_1hot4, lt_1hot4)
+
+target_list <- list("mnprmt_num", "mnearly_num", "mnlate_num")
+
+```
+
+
+```{r hyperparameter tuning, eval=FALSE, include=FALSE}
+
+i = 1
+for (ds_xgtune in pel_rsb_1hot_dss){
+  print(i)
+  
+  tg <- as.character(target_list[i])
+  
+  train_df <- data.frame()
+  test_df <- data.frame()
+  params_df <- data.frame()
+  
+  tr_acc <- list()
+  tr_sensi <- list()
+  tr_speci <- list()
+  tr_aur <- list()
+  tr_f1 <- list()
+  
+  test_acc <- list()
+  test_sensi <- list()
+  test_speci <- list()
+  test_aur <- list()
+  test_f1 <- list()
+  
+  ds_xgtune[,1] <- factor(ds_xgtune[,1])
+  
+  #Data Partiton
+  index <- createDataPartition(ds_xgtune[,1], p=0.7, list = FALSE)
+
+    ## Training dataset
+  Train <- ds_xgtune[index,]
+  Train3 <- downSample(Train, Train[,1], list = FALSE)
+  
+  labels <- Train3[,1]
+  labels <- as.numeric(labels)-1
+
+  train <- Train3 %>% 
+    select(-"Class")
+  new_tr <- Train3 %>% 
+    select(-c(1, "Class"))
+
+    ## Test dataset
+  Test <- ds_xgtune[-index,]
+  Test3 <- downSample(Test, Test[,1], list = FALSE)
+  
+  ts_labels <- Test3[,1]
+  ts_labels <- as.numeric(ts_labels)-1
+  
+  test <- Test3 %>% 
+    select(-"Class")
+  new_ts <- Test3 %>% 
+    select(-c(1, "Class"))
+  
+  str(new_ts)
+  
+  #preparing matrix 
+  dtrain <- xgb.DMatrix(data = as.matrix(new_tr),label = labels)
+  dtest <- xgb.DMatrix(data = as.matrix(new_ts),label= ts_labels)
+  
+  for (j in 1:10){
+    #nrounds, eta
+    min_loss = 10
+    best_it = 0
+    eta_2use = 0.3
+    
+    for (a in c(0.3, 0.1, 0.01)){
+      params <- list(booster = "gbtree", objective = "binary:logistic", eta=a, gamma=0,   
+                 max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+    
+      xgbcv <- xgb.cv( params = params, data = dtrain, nrounds = 400, nfold = 5, showsd = T, 
+                   stratified = T, print.every.n = 20, early.stop.round = 200, maximize = F)
+    
+      min_loss_new <- min(xgbcv$evaluation_log$test_logloss_mean)
+      best_it_new <- xgbcv$best_iteration
+    
+      best_it = ifelse(min_loss > min_loss_new, best_it_new, best_it)
+      eta_2use = ifelse(min_loss > min_loss_new, a, eta_2use)
+      min_loss = ifelse(min_loss > min_loss_new, min_loss_new, min_loss)
+    }
+
+    #default parameters
+    #print(min_loss, best_it, eta_2use)
+
+    params <- list(booster = "gbtree", objective = "binary:logistic", eta=eta_2use, gamma=0,
+                 max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)  
+  
+  
+    #create tasks
+    traintask <- makeClassifTask (data = train,target = tg)
+    testtask <- makeClassifTask (data = test,target = tg)
+
+    #do one hot encoding`<br/> 
+    traintask <- createDummyFeatures (obj = traintask) 
+    testtask <- createDummyFeatures (obj = testtask)
+
+    #create learner
+    lrn <- makeLearner("classif.xgboost",predict.type = "response")
+    lrn$par.vals <- list( objective="binary:logistic", eval_metric="error", nrounds=best_it,
+                        eta=eta_2use)
+
+    #set parameter space
+    params <- makeParamSet( makeDiscreteParam("booster",values = c("gbtree","gblinear")),   
+                          makeIntegerParam("max_depth",lower = 3L,upper = 10L), 
+                          makeNumericParam("min_child_weight",lower = 1L,upper = 10L), 
+                          makeNumericParam("subsample",lower = 0.5,upper = 1), 
+                          makeNumericParam("colsample_bytree",lower = 0.5,upper = 1))
+
+    #set resampling strategy
+    rdesc <- makeResampleDesc("CV",stratify = T,iters=5L)
+
+    #search strategy
+    ctrl <- makeTuneControlRandom(maxit = 10L)
+
+    #set parallel backend
+    parallelStartSocket(cpus = detectCores())
+
+    #parameter tuning
+    mytune <- tuneParams(learner = lrn, task = traintask, resampling = rdesc, 
+                         par.set = params,control = ctrl, show.info = T) #measures = acc, 
+
+    #set hyperparameters
+    lrn_tune <- setHyperPars(lrn,par.vals = mytune$x)
+    hyper_params <- lrn_tune$par.vals
+    params_list<- as.data.frame(hyper_params)
+
+    xgmodel <- mlr::train(learner = lrn_tune,task = traintask)
+
+    #Train Result
+    xgpred_train <- predict(xgmodel,traintask)
+    tr_pred <- xgpred_train$data$response
+    tr_truth <- xgpred_train$data$truth
+
+    conf_matrix <-table(tr_pred,tr_truth)
+    conf_matrix
+  
+    acc <-(conf_matrix[1,1]+conf_matrix[2,2])/(sum(conf_matrix))
+    sensi <- (conf_matrix[2,2])/(conf_matrix[2,2]+conf_matrix[2,1])
+    speci <- (conf_matrix[1,1])/(conf_matrix[1,1]+conf_matrix[1,2])
+    
+    tr_truth_num <- as.numeric(tr_truth) 
+    tr_pred_num <- as.numeric(tr_pred)
+    roc_obj <- roc(tr_truth_num, tr_pred_num)
+    auroc <- auc(roc_obj)
+    f1 <- calculate_f1score(conf_matrix)
+
+    #Test Results
+    xgpred <- predict(xgmodel,testtask)
+    ts_pred <- xgpred$data$response
+    ts_truth <- xgpred$data$truth
+
+    conf_matrix <-table(ts_truth, ts_pred)
+    conf_matrix
+    acc2 <-(conf_matrix[1,1]+conf_matrix[2,2])/(sum(conf_matrix))
+    sensi2 <- (conf_matrix[2,2])/(conf_matrix[2,2]+conf_matrix[2,1])
+    speci2 <- (conf_matrix[1,1])/(conf_matrix[1,1]+conf_matrix[1,2])
+    
+    ts_truth_num <- as.numeric(ts_truth) 
+    ts_pred_num <- as.numeric(ts_pred)
+    roc_obj <- roc(ts_truth_num, ts_pred_num)
+    auroc2 <- auc(roc_obj)
+    
+    f12 <- calculate_f1score(conf_matrix)
+    
+    
+    # Add results to lists
+    tr_acc <- c(tr_acc, acc)
+    tr_sensi <- c(tr_sensi, sensi)
+    tr_speci <- c(tr_speci, speci)
+    tr_aur <- c(tr_aur, auroc)
+    tr_f1 <- c(tr_f1, f1)
+    
+    test_acc <- c(test_acc, acc2)
+    test_sensi <- c(test_sensi, sensi2)
+    test_speci <- c(test_speci, speci2)
+    test_aur <- c(test_aur, auroc2)
+    test_f1 <- c(test_f1, f12)
+    
+    params_df <- rbind.fill(params_df, params_list)
+  }
+  train_df <- cbind(Acc = tr_acc, Sensi = tr_sensi, Speci = tr_speci, 
+                    AUROC = tr_aur, F1 = tr_f1 )
+  test_df <- cbind(Acc = test_acc, Sensi = test_sensi, Speci = test_speci, 
+                   AUROC = test_aur, F1 = test_f1 )
+  
+  train_df2 <- as.data.frame(train_df)
+  test_df2 <- as.data.frame(test_df)
+  params_df2 <- as.data.frame(params_df)
+  
+  train_df_name <- paste0("TR_",i)  # 데이터프레임의 이름을 동적으로 생성
+  test_df_name <- paste0("TS_", i) #train_df2를 각 formula별로 저장하기 위해서
+  params_df_name <- paste0("Params_", i)
+  
+  assign(train_df_name, mutate_all(train_df2, function(x) as.character(x)))
+  assign(test_df_name, mutate_all(test_df2, function(x) as.character(x)))
+  assign(params_df_name, mutate_all(params_df2, function(x) as.character(x)))
+  
+  print("done")
+  print(i)
+  print(j)
+  
+  i = i + 1
+}
+
+
+```
+
+```{r eval=FALSE, include=FALSE}
+write.csv(TR_1, "Prmt_rp TR.csv")
+write.csv(TS_1, "Prmt_rp TS.csv")
+write.csv(Params_1, "PRmt_rp Params.csv")
+
+write.csv(TR_2, "Early_rp TR.csv")
+write.csv(TS_2, "Early_rp TS.csv")
+write.csv(Params_2, "Early_rp Params.csv")
+
+write.csv(TR_3, "Late_rp TR.csv")
+write.csv(TS_3, "Late_rp TS.csv")
+write.csv(Params_3, "Late_rp Params.csv")
+
+```
+
+## train XGB w/best parameter combination
+# 1. Premature Menopause
+* xg_model<- xgboost(data = as.matrix(Train3[, !names(Train3) %in% c("mnprmt_num", "Class")]),
+                       label = Train3$mnprmt_num,
+                       nrounds = 136, eta=0.01,
+                       objective = "binary:logistic",  
+                       eval_metric = "error",
+                       booster = "gbtree",
+                       max_depth =10, min_child_weight = 9.3876,
+                       subsample= 0.6137, colsample_bytree = 0.5780)
+```{r include=FALSE}
+x<-1
+
+train_mean_df_prmt <- data.frame()
+test_mean_df_prmt <- data.frame()
+auroc100_df_prmt <- data.frame()
+auroc100_df_prmt <- cbind(NO = c(1:100))
+
+for (ds in pr_1hot_dss){
+  print(x)
+  
+  ds <- as.data.frame(ds)
+  
+  #print(ds)
+  #print(Formula)
+  
+  
+  train_df <- data.frame()
+  test_df <- data.frame()
+  imp_df <- data.frame()
+  
+  tr_acc <- list()
+  tr_sensi <- list()
+  tr_recall <- list()
+  tr_speci <- list()
+  tr_prec <- list()
+  tr_aur <- list()
+  tr_f1 <- list()
+  
+  test_acc <- list()
+  test_sensi <- list()
+  test_recall <- list()
+  test_speci <- list()
+  test_prec <- list()
+  test_aur <- list()
+  test_f1 <- list()
+  
+  
+  for (i in 1:30){
+    print(i)
+    
+    # Training - Test divison
+    set.seed(i)
+    ds$mnprmt_num <- factor(ds$mnprmt_num)
+    
+    index <- createDataPartition(ds$mnprmt_num, p=0.7, list = FALSE)
+    
+    ## Training dataset
+    Train <- ds[index,]
+    str(Train)
+    Train3 <- downSample(Train, Train$mnprmt_num, list = FALSE)
+    
+    ## Test dataset
+    Test <- ds[-index,]
+    Test3 <- downSample(Test, Test$mnprmt_num, list = FALSE)
+    
+    # Modelling
+    set.seed(i)
+    #table(Train$mnprmt_num)
+    #Train$mnprmt_num <- as.numeric(Train$mnprmt_num)
+    Train3$mnprmt_num <- as.numeric(Train3$mnprmt_num)-1
+    #Test$mnprmt_num <- as.numeric(Test$mnprmt_num)
+    Test3$mnprmt_num <- as.numeric(Test3$mnprmt_num)-1
+    
+    xg_model<- xgboost(data = as.matrix(Train3[, !names(Train3) %in% c("mnprmt_num", "Class")]),
+                       label = Train3$mnprmt_num,
+                       nrounds = 136, eta=0.01,
+                       objective = "binary:logistic",  # For binary classification
+                       # objective = "multi:softmax"  # For multi-class classification
+                       #num_class = 2,  # Set num_class to the number of classes for multi-class classification
+                       eval_metric = "error",
+                       booster = "gbtree",
+                       max_depth =10, min_child_weight = 9.3876,
+                       subsample= 0.6137, colsample_bytree = 0.5780)
+    
+    # Get the best model from the cross-validation results
+    #model <- svm_model$best.model
+    #train <- sample(1:150, 100) #무작위로 100개 추출 (학습데이터)
+    #(sv <- svm(Species ~., data = iris, subset = train,  type = "C-classification"))
+    #predict(sv, iris[-train,])
+    #(tt <- table(iris$Species[-train], predict(sv, iris[-train,])))
+    
+    
+    # Result - Training set
+    #Train$pred <- predict(xgb_model_class, as.matrix(test_data[, !names(test_data) %in% "target"]))
+    
+    # For classification tasks (binary or multi-class)
+    # Assuming your target variable is binary (0 or 1)
+    #predictions_binary <- ifelse(predictions_class >= 0.5, 1, 0)
+    #accuracy <- mean(predictions_binary == test_data$target)
+    
+    Train3$pred <- predict(xg_model, as.matrix(Train3[, !names(Train) %in% c("mnprmt_num", "Class")]))
+    Train3$pred2 <- ifelse(Train3$pred >= 0.5, 1, 0)
+    Train3$pred3 <- factor(Train3$pred2, ordered = TRUE)
+    conf_matrix <-table(Train3$pred3,Train3$mnprmt_num)
+    #Train$pred <- model$predicted
+    #Train$pred2 <- factor(Train$pred, ordered = TRUE)
+    #conf_matrix <- table(predict(model, Train), Train$mnprmt)
+    acc <-(conf_matrix[1,1]+conf_matrix[2,2])/(sum(conf_matrix))
+    sensi <- (conf_matrix[2,2])/(conf_matrix[2,2]+conf_matrix[1,2])
+    #recall <- calculate_recall(conf_matrix)
+    speci <- (conf_matrix[1,1])/(conf_matrix[1,1]+conf_matrix[2,1])
+    prec <- calculate_precision(conf_matrix)
+    roc_obj <- roc(Train3$mnprmt_num, Train3$pred2)
+    auroc <- auc(roc_obj)
+    f1 <- calculate_f1score(conf_matrix)
+    
+    
+    # Result - Test set
+    Test3$pred <- predict(xg_model, as.matrix(Test3[, !names(Test3) %in% c("mnprmt_num", "Class")]))
+    Test3$pred2 <- ifelse(Test3$pred >= 0.5, 1, 0)
+    Test3$pred3 <- factor(Test3$pred2, ordered = TRUE)
+    conf_matrix2 <-table(Test3$pred3,Test3$mnprmt_num)
+    acc2 <-(conf_matrix2[1,1]+conf_matrix2[2,2])/(sum(conf_matrix2))
+    sensi2 <- (conf_matrix2[2,2])/(conf_matrix2[2,2]+conf_matrix2[1,2])
+    #recall2<- calculate_recall(conf_matrix2)
+    speci2 <- (conf_matrix2[1,1])/(conf_matrix2[1,1]+conf_matrix2[2,1])
+    prec2<- calculate_precision(conf_matrix2)
+    roc_obj2 <- roc(Test3$mnprmt_num, Test3$pred2)
+    auroc2 <- auc(roc_obj2)
+    f12 <- calculate_f1score(conf_matrix2)
+    
+    str(Train)
+    #feature importance
+    #imp <- xgb.importance(feature_names = colnames(Train[,!names(Train) %in% c("mnprmt_num", "pred", "pred2", "pred3")], model = xg_model))
+    imp <- xgb.importance(model = xg_model)
+    imp2 <- imp %>% 
+      select(Feature, Gain)
+    imp3 <- as.data.frame(t(imp2))
+    
+    # Get the first row of the data frame
+    first_row <- imp3[1, ]
+    
+    # Set the column names of the data frame to the values of the first row
+    colnames(imp3) <- first_row
+    
+    # Remove the first row (since it's now the column names)
+    imp3 <- imp3[-1, ]
+    
+    #importance_xgb <- xgb.importance(feature_names = colnames(X), model = xgb_model)
+    #imp2 <- imp[,3]
+    #imp2 <- as.list(imp2)
+    
+    # Add results to lists
+    tr_acc <- c(tr_acc, acc)
+    tr_sensi <- c(tr_sensi, sensi)
+    tr_speci <- c(tr_speci, speci)
+    tr_prec <- c(tr_prec, prec)
+    tr_aur <- c(tr_aur, auroc)
+    tr_f1 <- c(tr_f1, f1)
+    
+    test_acc <- c(test_acc, acc2)
+    test_sensi <- c(test_sensi, sensi2)
+    test_speci <- c(test_speci, speci2)
+    test_prec <- c(test_prec, prec2)
+    test_aur <- c(test_aur, auroc2)
+    test_f1 <- c(test_f1, f12)
+    
+    imp_df <- rbind.fill(imp_df, imp3)
+    
+  }
+  train_df <- cbind(Acc = tr_acc, Sensi_Recall = tr_sensi, Speci = tr_speci, Precison=tr_prec, AUROC = tr_aur, F1 = tr_f1 )
+  test_df <- cbind(Acc = test_acc, Sensi = test_sensi, Speci = test_speci, Precision = test_prec, AUROC = test_aur, F1 = test_f1 )
+  
+  train_df2 <- as.data.frame(train_df)
+  test_df2 <- as.data.frame(test_df)
+  imp_df2 <- as.data.frame(imp_df)
+  
+  train_df_name <- paste0("prmt_",x, "_Train")  # 데이터프레임의 이름을 동적으로 생성
+  test_df_name <- paste0("prmt_", x, "_Test") #train_df2를 각 formula별로 저장하기 위해서
+  feature_df_name <- paste0("prmt_", x, "_Feature")
+  
+  assign(train_df_name, mutate_all(train_df2, function(x) as.numeric(as.character(x))))
+  assign(test_df_name, mutate_all(test_df2, function(x) as.numeric(as.character(x))))
+  assign(feature_df_name, mutate_all(imp_df2, function(x) as.numeric(as.character(x))))
+  
+  ### 여기까지 일단 100번 반복에 대한 train, test 퍼포먼스랑 feature importance 저장 끝
+  
+  train_df3 <- get(train_df_name)
+  test_df3 <- get(test_df_name)
+  imp_df3 <- get(feature_df_name)
+  
+  train_means <- colMeans(train_df3)
+  test_means <- colMeans(test_df3)
+  imp_means <- colMeans(imp_df3, na.rm = TRUE)
+  
+  train_means <- as.list(train_means) #모든 formula에 대해 train, test 는 칼럼이 동일 => rbind
+  test_means <- as.list(test_means)
+  train_mean_df_prmt <- rbind(train_mean_df_prmt, train_means)
+  test_mean_df_prmt <- rbind(test_mean_df_prmt, test_means)
+  
+  feature_mean_df_name <- paste0("prmt_", x, "_Feature_mean") # formula마다 feature는 다른 관계로 bind불가 
+  assign(feature_mean_df_name, as.data.frame(imp_means)) #따로따로 mean값 정리된 버전 내보내기
+  
+  test_aur <- as.list(as.numeric(as.character(test_aur)))
+  auroc100_df_prmt <- cbind(auroc100_df_prmt, x= test_aur)
+  
+  x = x+1
+}
+```
+
+- print result of Premature Menopause Prediction
+```{r}
+print(train_mean_df_prmt)
+print(test_mean_df_prmt)
+imp_sorted <- as.data.frame(imp_means)
+imp_sorted <- imp_sorted %>% 
+  mutate(predictor = rownames(imp_sorted)) %>% 
+  arrange(desc(imp_means))
+head(imp_sorted, 15)
+```
+
+```{r export prmt, include=FALSE}
+write.csv(train_mean_df_prmt, "xg prmt TR.csv")
+write.csv(test_mean_df_prmt, "xg prmt TS.csv")
+write.csv(auroc100_df_prmt, "xg prmt AUROC 100.csv")
+
+write.csv(prmt_1_Train, "xg prmt RP TR.csv")
+write.csv(prmt_1_Test, "xg prmt RP TS.csv")
+write.csv(prmt_1_Feature, "xg prmt RP Feature.csv")
+write.csv(prmt_1_Feature_mean, "xg prmt RP Feature Mean.csv")
+
+write.csv(prmt_2_Train, "xg prmt SOC TR.csv")
+write.csv(prmt_2_Test, "xg prmt SOC TS.csv")
+write.csv(prmt_2_Feature, "xg prmt SOC Feature.csv")
+write.csv(prmt_2_Feature_mean, "xg prmt SOC Feature Mean.csv")
+
+write.csv(prmt_3_Train, "xg prmt BIO TR.csv")
+write.csv(prmt_3_Test, "xg prmt BIO TS.csv")
+write.csv(prmt_3_Feature, "xg prmt BIO Feature.csv")
+write.csv(prmt_3_Feature_mean, "xg prmt BIO Feature Mean.csv")
+
+write.csv(prmt_4_Train, "xg prmt RSB TR.csv")
+write.csv(prmt_4_Test, "xg prmt RSB TS.csv")
+write.csv(prmt_4_Feature, "xg prmt RSB Feature.csv")
+write.csv(prmt_4_Feature_mean, "xg prmt RSB Feature Mean.csv")
+```
+
+
+# 2. Early
+   * xg_model<- xgboost(data = as.matrix(Train3[, !names(Train3) %in% c("mnearly_num", "Class")]),
+                       label = Train3$mnearly_num,
+                       nrounds = 15, eta=0.1,
+                       objective = "binary:logistic", 
+                       eval_metric = "error",
+                       booster = "gbtree",
+                       max_depth =4, min_child_weight = 6.2338,
+                       subsample= 0.6971, colsample_bytree = 0.5135)
+```{r include=FALSE}
+x<-1
+
+train_mean_df_early <- data.frame()
+test_mean_df_early <- data.frame()
+auroc100_df_early <- data.frame()
+auroc100_df_early <- cbind(NO = c(1:100))
+
+
+for (ds in er_1hot_dss){
+  print(x)
+  
+  ds <- as.data.frame(ds)
+  
+  #print(ds)
+  #print(Formula)
+  
+  
+  train_df <- data.frame()
+  test_df <- data.frame()
+  imp_df <- data.frame()
+  
+  tr_acc <- list()
+  tr_sensi <- list()
+  tr_speci <- list()
+  tr_prec <- list()
+  tr_aur <- list()
+  tr_f1 <- list()
+  
+  test_acc <- list()
+  test_sensi <- list()
+  test_speci <- list()
+  test_prec <- list()
+  test_aur <- list()
+  test_f1 <- list()
+  
+  
+  for (i in 1:30){
+    print(i)
+    
+    # Training - Test divison
+    set.seed(i)
+    ds$mnearly_num <- factor(ds$mnearly_num)
+    
+    index <- createDataPartition(ds$mnearly_num, p=0.7, list = FALSE)
+    
+    ## Training dataset
+    Train <- ds[index,]
+    str(Train)
+    Train3 <- downSample(Train, Train$mnearly_num, list = FALSE)
+    
+    ## Test dataset
+    Test <- ds[-index,]
+    Test3 <- downSample(Test, Test$mnearly_num, list = FALSE)
+    
+    # Modelling
+    set.seed(i)
+    #table(Train$mnearly_num)
+    #Train$mnearly_num <- as.numeric(Train$mnearly_num)
+    Train3$mnearly_num <- as.numeric(Train3$mnearly_num)-1
+    #Test$mnearly_num <- as.numeric(Test$mnearly_num)
+    Test3$mnearly_num <- as.numeric(Test3$mnearly_num)-1
+    
+    xg_model<- xgboost(data = as.matrix(Train3[, !names(Train3) %in% c("mnearly_num", "Class")]),
+                       label = Train3$mnearly_num,
+                       nrounds = 15, eta=0.1,
+                       objective = "binary:logistic",  # For binary classification
+                       # objective = "multi:softmax"  # For multi-class classification
+                       #num_class = 2,  # Set num_class to the number of classes for multi-class classification
+                       eval_metric = "error",
+                       booster = "gbtree",
+                       max_depth =4, min_child_weight = 6.2338,
+                       subsample= 0.6971, colsample_bytree = 0.5135)
+    
+    
+    Train3$pred <- predict(xg_model, as.matrix(Train3[, !names(Train) %in% c("mnearly_num", "Class")]))
+    Train3$pred2 <- ifelse(Train3$pred >= 0.5, 1, 0)
+    Train3$pred3 <- factor(Train3$pred2, ordered = TRUE)
+    conf_matrix <-table(Train3$pred3,Train3$mnearly_num)
+    #Train$pred <- model$predicted
+    #Train$pred2 <- factor(Train$pred, ordered = TRUE)
+    #conf_matrix <- table(predict(model, Train), Train$mnearly)
+    acc <-(conf_matrix[1,1]+conf_matrix[2,2])/(sum(conf_matrix))
+    sensi <- (conf_matrix[2,2])/(conf_matrix[2,2]+conf_matrix[1,2])
+    speci <- (conf_matrix[1,1])/(conf_matrix[1,1]+conf_matrix[2,1])
+    prec <- calculate_precision(conf_matrix)
+    roc_obj <- roc(Train3$mnearly_num, Train3$pred2)
+    auroc <- auc(roc_obj)
+    f1 <- calculate_f1score(conf_matrix)
+    
+    
+    # Result - Test set
+    Test3$pred <- predict(xg_model, as.matrix(Test3[, !names(Test3) %in% c("mnearly_num", "Class")]))
+    Test3$pred2 <- ifelse(Test3$pred >= 0.5, 1, 0)
+    Test3$pred3 <- factor(Test3$pred2, ordered = TRUE)
+    conf_matrix2 <-table(Test3$pred3,Test3$mnearly_num)
+    conf_matrix2
+    acc2 <-(conf_matrix2[1,1]+conf_matrix2[2,2])/(sum(conf_matrix2))
+    sensi2 <- (conf_matrix2[2,2])/(conf_matrix2[2,2]+conf_matrix2[1,2])
+    speci2 <- (conf_matrix2[1,1])/(conf_matrix2[1,1]+conf_matrix2[2,1])
+    prec2 <- calculate_precision(conf_matrix2)
+    roc_obj2 <- roc(Test3$mnearly_num, Test3$pred2)
+    auroc2 <- auc(roc_obj2)
+    f12 <- calculate_f1score(conf_matrix2)
+    
+    str(Train)
+    #feature importance
+    #imp <- xgb.importance(feature_names = colnames(Train[,!names(Train) %in% c("mnearly_num", "pred", "pred2", "pred3")], model = xg_model))
+    imp <- xgb.importance(model = xg_model)
+    imp2 <- imp %>% 
+      select(Feature, Gain)
+    imp3 <- as.data.frame(t(imp2))
+    
+    # Get the first row of the data frame
+    first_row <- imp3[1, ]
+    
+    # Set the column names of the data frame to the values of the first row
+    colnames(imp3) <- first_row
+    
+    # Remove the first row (since it's now the column names)
+    imp3 <- imp3[-1, ]
+    
+    #importance_xgb <- xgb.importance(feature_names = colnames(X), model = xgb_model)
+    #imp2 <- imp[,3]
+    #imp2 <- as.list(imp2)
+    
+    # Add results to lists
+    tr_acc <- c(tr_acc, acc)
+    tr_sensi <- c(tr_sensi, sensi)
+    tr_speci <- c(tr_speci, speci)
+    tr_prec <- c(tr_prec, prec)
+    tr_aur <- c(tr_aur, auroc)
+    tr_f1 <- c(tr_f1, f1)
+    
+    test_acc <- c(test_acc, acc2)
+    test_sensi <- c(test_sensi, sensi2)
+    test_speci <- c(test_speci, speci2)
+    test_prec <- c(test_prec, prec2)
+    test_aur <- c(test_aur, auroc2)
+    test_f1 <- c(test_f1, f12)
+    
+    imp_df <- rbind.fill(imp_df, imp3)
+    
+  }
+  train_df <- cbind(Acc = tr_acc, Sensi = tr_sensi, Speci = tr_speci, Precision = tr_prec, AUROC = tr_aur, F1 = tr_f1 )
+  test_df <- cbind(Acc = test_acc, Sensi = test_sensi, Speci = test_speci, Precision = test_prec, AUROC = test_aur, F1 = test_f1 )
+  
+  train_df2 <- as.data.frame(train_df)
+  test_df2 <- as.data.frame(test_df)
+  imp_df2 <- as.data.frame(imp_df)
+  
+  train_df_name <- paste0("early_",x, "_Train")  # 데이터프레임의 이름을 동적으로 생성
+  test_df_name <- paste0("early_", x, "_Test") #train_df2를 각 formula별로 저장하기 위해서
+  feature_df_name <- paste0("early_", x, "_Feature")
+  
+  assign(train_df_name, mutate_all(train_df2, function(x) as.numeric(as.character(x))))
+  assign(test_df_name, mutate_all(test_df2, function(x) as.numeric(as.character(x))))
+  assign(feature_df_name, mutate_all(imp_df2, function(x) as.numeric(as.character(x))))
+  
+  ### 여기까지 일단 100번 반복에 대한 train, test 퍼포먼스랑 feature importance 저장 끝
+  
+  train_df3 <- get(train_df_name)
+  test_df3 <- get(test_df_name)
+  imp_df3 <- get(feature_df_name)
+  
+  train_means <- colMeans(train_df3)
+  test_means <- colMeans(test_df3)
+  imp_means <- colMeans(imp_df3, na.rm = TRUE)
+  
+  train_means <- as.list(train_means) #모든 formula에 대해 train, test 는 칼럼이 동일 => rbind
+  test_means <- as.list(test_means)
+  train_mean_df_early <- rbind(train_mean_df_early, train_means)
+  test_mean_df_early <- rbind(test_mean_df_early, test_means)
+  
+  feature_mean_df_name <- paste0("early_", x, "_Feature_mean") # formula마다 feature는 다른 관계로 bind불가 
+  assign(feature_mean_df_name, as.data.frame(imp_means)) #따로따로 mean값 정리된 버전 내보내기
+  
+  test_aur <- as.list(as.numeric(as.character(test_aur)))
+  auroc100_df_early <- cbind(auroc100_df_early, x= test_aur)
+  
+  x = x+1
+}
+```
+
+- print result of Early Menpoause Prediction
+```{r}
+print(train_mean_df_early)
+print(test_mean_df_early)
+imp_sorted <- as.data.frame(imp_means)
+imp_sorted <- imp_sorted %>% 
+  mutate(predictor = rownames(imp_sorted)) %>% 
+  arrange(desc(imp_means))
+head(imp_sorted, 15)
+```
+```{r export early, include=FALSE}
+write.csv(train_mean_df_early, "xg early TR.csv")
+write.csv(test_mean_df_early, "xg early TS.csv")
+write.csv(auroc100_df_early, "xg early AUROC 100.csv")
+
+write.csv(early_1_Train, "xg early RP TR.csv")
+write.csv(early_1_Test, "xg early RP TS.csv")
+write.csv(early_1_Feature, "xg early RP Feature.csv")
+write.csv(early_1_Feature_mean, "xg early RP Feature Mean.csv")
+
+write.csv(early_2_Train, "xg early SOC TR.csv")
+write.csv(early_2_Test, "xg early SOC TS.csv")
+write.csv(early_2_Feature, "xg early SOC Feature.csv")
+write.csv(early_2_Feature_mean, "xg early SOC Feature Mean.csv")
+
+write.csv(early_3_Train, "xg early BIO TR.csv")
+write.csv(early_3_Test, "xg early BIO TS.csv")
+write.csv(early_3_Feature, "xg early BIO Feature.csv")
+write.csv(early_3_Feature_mean, "xg early BIO Feature Mean.csv")
+
+write.csv(early_4_Train, "xg early RSB TR.csv")
+write.csv(early_4_Test, "xg early RSB TS.csv")
+write.csv(early_4_Feature, "xg early RSB Feature.csv")
+write.csv(early_4_Feature_mean, "xg early RSB Feature Mean.csv")
+```
+
+
+# 3. Late
+  *  xg_model<- xgboost(data = as.matrix(Train3[, !names(Train3) %in% c("mnlate_num", "Class")]),
+                       label = Train3$mnlate_num,
+                       nrounds = 19, eta=0.1,
+                       objective = "binary:logistic",  
+                       eval_metric = "error",
+                       booster = "gbtree",
+                       max_depth =7, min_child_weight = 3.1024,
+                       subsample= 0.6207, colsample_bytree = 0.5058)
+```{r include=FALSE}
+x<-1
+
+train_mean_df_late <- data.frame()
+test_mean_df_late <- data.frame()
+auroc100_df_late <- data.frame()
+auroc100_df_late <- cbind(NO = c(1:100))
+
+for (ds in lt_1hot_dss){
+  print(x)
+  
+  ds <- as.data.frame(ds)
+  
+  #print(ds)
+  #print(Formula)
+  
+  
+  train_df <- data.frame()
+  test_df <- data.frame()
+  imp_df <- data.frame()
+  
+  tr_acc <- list()
+  tr_sensi <- list()
+  tr_speci <- list()
+  tr_aur <- list()
+  tr_f1 <- list()
+  
+  test_acc <- list()
+  test_sensi <- list()
+  test_speci <- list()
+  test_aur <- list()
+  test_f1 <- list()
+  
+  
+  for (i in 1:30){
+    print(i)
+    
+    # Training - Test divison
+    set.seed(i)
+    ds$mnlate_num <- factor(ds$mnlate_num)
+    
+    index <- createDataPartition(ds$mnlate_num, p=0.7, list = FALSE)
+    
+    ## Training dataset
+    Train <- ds[index,]
+    str(Train)
+    Train3 <- downSample(Train, Train$mnlate_num, list = FALSE)
+    
+    ## Test dataset
+    Test <- ds[-index,]
+    Test3 <- downSample(Test, Test$mnlate_num, list = FALSE)
+    
+    # Modelling
+    set.seed(i)
+    #table(Train$mnlate_num)
+    #Train$mnlate_num <- as.numeric(Train$mnlate_num)
+    Train3$mnlate_num <- as.numeric(Train3$mnlate_num)-1
+    #Test$mnlate_num <- as.numeric(Test$mnlate_num)
+    Test3$mnlate_num <- as.numeric(Test3$mnlate_num)-1
+    
+    xg_model<- xgboost(data = as.matrix(Train3[, !names(Train3) %in% c("mnlate_num", "Class")]),
+                       label = Train3$mnlate_num,
+                       nrounds = 19, eta=0.1,
+                       objective = "binary:logistic",  # For binary classification
+                       # objective = "multi:softmax"  # For multi-class classification
+                       #num_class = 2,  # Set num_class to the number of classes for multi-class classification
+                       eval_metric = "error",
+                       booster = "gbtree",
+                       max_depth =7, min_child_weight = 3.1024,
+                       subsample= 0.6207, colsample_bytree = 0.5058)
+    
+    # Get the best model from the cross-validation results
+    #model <- svm_model$best.model
+    #train <- sample(1:150, 100) #무작위로 100개 추출 (학습데이터)
+    #(sv <- svm(Species ~., data = iris, subset = train,  type = "C-classification"))
+    #predict(sv, iris[-train,])
+    #(tt <- table(iris$Species[-train], predict(sv, iris[-train,])))
+    
+    
+    # Result - Training set
+    #Train$pred <- predict(xgb_model_class, as.matrix(test_data[, !names(test_data) %in% "target"]))
+    
+    # For classification tasks (binary or multi-class)
+    # Assuming your target variable is binary (0 or 1)
+    #predictions_binary <- ifelse(predictions_class >= 0.5, 1, 0)
+    #accuracy <- mean(predictions_binary == test_data$target)
+    
+    Train3$pred <- predict(xg_model, as.matrix(Train3[, !names(Train) %in% c("mnlate_num", "Class")]))
+    Train3$pred2 <- ifelse(Train3$pred >= 0.5, 1, 0)
+    Train3$pred3 <- factor(Train3$pred2, ordered = TRUE)
+    pred<-Train3$pred3
+    truth<-Train3$mnlate_num
+    conf_matrix <-table(pred, truth)
+    #Train$pred <- model$predicted
+    #Train$pred2 <- factor(Train$pred, ordered = TRUE)
+    #conf_matrix <- table(predict(model, Train), Train$mnlate)
+    
+    acc <-(conf_matrix[1,1]+conf_matrix[2,2])/(sum(conf_matrix))
+    sensi <- (conf_matrix[2,2])/(conf_matrix[2,2]+conf_matrix[1,2])
+    speci <- (conf_matrix[1,1])/(conf_matrix[1,1]+conf_matrix[2,1])
+    roc_obj <- roc(Train3$mnlate_num, Train3$pred2)
+    auroc <- auc(roc_obj)
+    f1 <- calculate_f1score(conf_matrix)
+    
+    
+    # Result - Test set
+    Test3$pred <- predict(xg_model, as.matrix(Test3[, !names(Test3) %in% c("mnlate_num", "Class")]))
+    Test3$pred2 <- ifelse(Test3$pred >= 0.5, 1, 0)
+    Test3$pred3 <- factor(Test3$pred2, ordered = TRUE)
+    pred2<-Test3$pred3
+    truth2<-Test3$mnlate_num
+    conf_matrix2 <-table(pred2, truth2)
+    #conf_matrix2
+    #conf_matrix2[,1]
+    #conf_matrix2 <-table(Test3$pred3,Test3$mnlate_num)
+    acc2 <-(conf_matrix2[1,1]+conf_matrix2[2,2])/(sum(conf_matrix2))
+    sensi2 <- (conf_matrix2[2,2])/(conf_matrix2[2,2]+conf_matrix2[1,2])
+    #speci2 <- (conf_matrix2[1,1])/(conf_matrix2[1,1]+conf_matrix2[2,1])
+    speci2 <- (conf_matrix2[1,1])/(sum(conf_matrix2[,1]))
+    #speci2
+    roc_obj2 <- roc(Test3$mnlate_num, Test3$pred2)
+    auroc2 <- auc(roc_obj2)
+    f12 <- calculate_f1score(conf_matrix2)
+    
+    str(Train)
+    #feature importance
+    #imp <- xgb.importance(feature_names = colnames(Train[,!names(Train) %in% c("mnlate_num", "pred", "pred2", "pred3")], model = xg_model))
+    imp <- xgb.importance(model = xg_model)
+    imp2 <- imp %>% 
+      select(Feature, Gain)
+    imp3 <- as.data.frame(t(imp2))
+    
+    # Get the first row of the data frame
+    first_row <- imp3[1, ]
+    
+    # Set the column names of the data frame to the values of the first row
+    colnames(imp3) <- first_row
+    
+    # Remove the first row (since it's now the column names)
+    imp3 <- imp3[-1, ]
+    
+    #importance_xgb <- xgb.importance(feature_names = colnames(X), model = xgb_model)
+    #imp2 <- imp[,3]
+    #imp2 <- as.list(imp2)
+    
+    # Add results to lists
+    tr_acc <- c(tr_acc, acc)
+    tr_sensi <- c(tr_sensi, sensi)
+    tr_speci <- c(tr_speci, speci)
+    tr_aur <- c(tr_aur, auroc)
+    tr_f1 <- c(tr_f1, f1)
+    
+    test_acc <- c(test_acc, acc2)
+    test_sensi <- c(test_sensi, sensi2)
+    test_speci <- c(test_speci, speci2)
+    test_aur <- c(test_aur, auroc2)
+    test_f1 <- c(test_f1, f12)
+    
+    imp_df <- rbind.fill(imp_df, imp3)
+    
+  }
+  train_df <- cbind(Acc = tr_acc, Sensi = tr_sensi, Speci = tr_speci, AUROC = tr_aur, F1 = tr_f1 )
+  test_df <- cbind(Acc = test_acc, Sensi = test_sensi, Speci = test_speci, AUROC = test_aur, F1 = test_f1 )
+  
+  train_df2 <- as.data.frame(train_df)
+  test_df2 <- as.data.frame(test_df)
+  imp_df2 <- as.data.frame(imp_df)
+  
+  train_df_name <- paste0("late_",x, "_Train")  # 데이터프레임의 이름을 동적으로 생성
+  test_df_name <- paste0("late_", x, "_Test") #train_df2를 각 formula별로 저장하기 위해서
+  feature_df_name <- paste0("late_", x, "_Feature")
+  
+  assign(train_df_name, mutate_all(train_df2, function(x) as.numeric(as.character(x))))
+  assign(test_df_name, mutate_all(test_df2, function(x) as.numeric(as.character(x))))
+  assign(feature_df_name, mutate_all(imp_df2, function(x) as.numeric(as.character(x))))
+  
+  ### 여기까지 일단 100번 반복에 대한 train, test 퍼포먼스랑 feature importance 저장 끝
+  
+  train_df3 <- get(train_df_name)
+  test_df3 <- get(test_df_name)
+  imp_df3 <- get(feature_df_name)
+  
+  train_means <- colMeans(train_df3)
+  test_means <- colMeans(test_df3)
+  imp_means <- colMeans(imp_df3, na.rm = TRUE)
+  
+  train_means <- as.list(train_means) #모든 formula에 대해 train, test 는 칼럼이 동일 => rbind
+  test_means <- as.list(test_means)
+  train_mean_df_late <- rbind(train_mean_df_late, train_means)
+  test_mean_df_late <- rbind(test_mean_df_late, test_means)
+  
+  feature_mean_df_name <- paste0("late_", x, "_Feature_mean") # formula마다 feature는 다른 관계로 bind불가 
+  assign(feature_mean_df_name, as.data.frame(imp_means)) #따로따로 mean값 정리된 버전 내보내기
+  
+  test_aur <- as.list(as.numeric(as.character(test_aur)))
+  auroc100_df_late <- cbind(auroc100_df_late, x= test_aur)
+  
+  x = x+1
+}
+```
+
+- print result of Late Menpoause Prediction
+```{r}
+print(train_mean_df_late)
+print(test_mean_df_late)
+imp_sorted <- as.data.frame(imp_means)
+imp_sorted <- imp_sorted %>% 
+  mutate(predictor = rownames(imp_sorted)) %>% 
+  arrange(desc(imp_means))
+head(imp_sorted, 15)
+```
+
+
+```{r include=FALSE}
+write.csv(train_mean_df_late, "xg late TR.csv")
+write.csv(test_mean_df_late, "xg late TS.csv")
+write.csv(auroc100_df_late, "xg late AUROC 100.csv")
+
+write.csv(late_1_Train, "xg late RP TR.csv")
+write.csv(late_1_Test, "xg late RP TS.csv")
+write.csv(late_1_Feature, "xg late RP Feature.csv")
+write.csv(late_1_Feature_mean, "xg late RP Feature Mean.csv")
+
+write.csv(late_2_Train, "xg late SOC TR.csv")
+write.csv(late_2_Test, "xg late SOC TS.csv")
+write.csv(late_2_Feature, "xg late SOC Feature.csv")
+write.csv(late_2_Feature_mean, "xg late SOC Feature Mean.csv")
+
+write.csv(late_3_Train, "xg late BIO TR.csv")
+write.csv(late_3_Test, "xg late BIO TS.csv")
+write.csv(late_3_Feature, "xg late BIO Feature.csv")
+write.csv(late_3_Feature_mean, "xg late BIO Feature Mean.csv")
+
+write.csv(late_4_Train, "xg late RSB TR.csv")
+write.csv(late_4_Test, "xg late RSB TS.csv")
+write.csv(late_4_Feature, "xg late RSB Feature.csv")
+write.csv(late_4_Feature_mean, "xg late RSB Feature Mean.csv")
+```
+
